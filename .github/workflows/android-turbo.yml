@@ -17,7 +17,7 @@ jobs:
             -DGGML_NATIVE=OFF -DGGML_LTO=ON \
             -DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_CURL=OFF
-          cmake --build build -j4 --target llama-cli llama-server llama-bench
+          cmake --build build -j4 --target llama-cli llama-server llama-bench llama-quantize
       - uses: actions/upload-artifact@v4
         with:
           name: llama-android
