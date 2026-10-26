@@ -2331,6 +2331,22 @@ static inline svuint32_t ggml_decode_q4scales_and_mins_for_mmla(const uint32_t *
 }
 #endif
 
+#if defined(__ARM_NEON)
+#if !defined(__ARM_FEATURE_DOTPROD)
+static inline int32x4_t ggml_vdotq2_s32(int8x16_t a0, int8x16_t b0, int8x16_t a1, int8x16_t b1) {
+    int16x8_t t = vmull_s8(vget_low_s8(a0), vget_low_s8(b0));
+    t = vmlal_s8(t, vget_high_s8(a0), vget_high_s8(b0));
+    t = vmlal_s8(t, vget_low_s8(a1), vget_low_s8(b1));
+    t = vmlal_s8(t, vget_high_s8(a1), vget_high_s8(b1));
+    return vpaddlq_s16(t);
+}
+#else
+static inline int32x4_t ggml_vdotq2_s32(int8x16_t a0, int8x16_t b0, int8x16_t a1, int8x16_t b1) {
+    return ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), a0, b0), a1, b1);
+}
+#endif
+#endif
+
 void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
 #ifdef __ARM_FEATURE_MATMUL_INT8
@@ -2823,8 +2839,8 @@ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
         const uint8_t * GGML_RESTRICT q4 = x[i].qs;
         const int8_t  * GGML_RESTRICT q8 = y[i].qs;
 
-        int32_t sumi1 = 0;
-        int32_t sumi2 = 0;
+        int32x4_t acc1 = mzero;
+        int32x4_t acc2 = mzero;
 
         for (int j = 0; j < QK_K/64; ++j) {
             const ggml_uint8x16x2_t q4bits = ggml_vld1q_u8_x2(q4); q4 += 32;
@@ -2833,19 +2849,16 @@ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             q4bytes.val[0] = vreinterpretq_s8_u8(vandq_u8  (q4bits.val[0], m4b));
             q4bytes.val[1] = vreinterpretq_s8_u8(vandq_u8  (q4bits.val[1], m4b));
 
-            const int32x4_t p1 = ggml_vdotq_s32(ggml_vdotq_s32(mzero, q4bytes.val[0], q8bytes.val[0]), q4bytes.val[1], q8bytes.val[1]);
-            sumi1 += vaddvq_s32(p1) * scales[2*j+0];
+            acc1 = vmlaq_n_s32(acc1, ggml_vdotq2_s32(q4bytes.val[0], q8bytes.val[0], q4bytes.val[1], q8bytes.val[1]), scales[2*j+0]);
 
             q8bytes = ggml_vld1q_s8_x2(q8); q8 += 32;
             q4bytes.val[0] = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.val[0], 4));
             q4bytes.val[1] = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.val[1], 4));
 
-            const int32x4_t p2 = ggml_vdotq_s32(ggml_vdotq_s32(mzero, q4bytes.val[0], q8bytes.val[0]), q4bytes.val[1], q8bytes.val[1]);
-
-            sumi2 += vaddvq_s32(p2) * scales[2*j+1];
+            acc2 = vmlaq_n_s32(acc2, ggml_vdotq2_s32(q4bytes.val[0], q8bytes.val[0], q4bytes.val[1], q8bytes.val[1]), scales[2*j+1]);
         }
 
-        sumf += d * (sumi1 + sumi2);
+        sumf += d * (float) vaddvq_s32(vaddq_s32(acc1, acc2));
 
     }
 
